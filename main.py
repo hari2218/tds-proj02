@@ -122,7 +122,7 @@ def get_task_tool(task: str, tools: list[Dict[str, Any]]) -> Dict[str, Any]:
     response = httpx.post(
         f"{AI_URL}/chat/completions",
         headers={
-            "Authorization": f"Bearer {AIPROXY_TOKEN}",
+            "Authorization": f"Bearer {AIPROXY_TOKEN}:{APP_ID}",
             "Content-Type": "application/json",
         },
         json={
@@ -148,7 +148,7 @@ def get_chat_completions(messages: list[Dict[str, Any]]):
     response = httpx.post(
         f"{AI_URL}/chat/completions",
         headers={
-            "Authorization": f"Bearer {AIPROXY_TOKEN}",
+            "Authorization": f"Bearer {AIPROXY_TOKEN}:{APP_ID}",
             "Content-Type": "application/json",
         },
         json={
@@ -172,7 +172,7 @@ def get_embeddings(text: str):
     response = httpx.post(
         f"{AI_URL}/embeddings",
         headers={
-            "Authorization": f"Bearer {AIPROXY_TOKEN}",
+            "Authorization": f"Bearer {AIPROXY_TOKEN}:{APP_ID}",
             "Content-Type": "application/json",
         },
         json={
@@ -230,16 +230,17 @@ def check_modules(modules):
     return missing_modules, outdated_modules
 
 
-@app.post("/api/")
-async def process_file(question: str, file: UploadFile = File(...)):
+@app.post("/api")
+async def process_file(question: str = File(...), file: Optional[UploadFile] = File(None)):
     try:
         if not question:
             raise ValueError("Task description is required")
 
         # Save uploaded file
-        file_path = os.path.join(UPLOAD_DIR, file.filename)
-        with open(file_path, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
+        if file and file.filename:
+            file_path = os.path.join(UPLOAD_DIR, file.filename)
+            with open(file_path, "wb") as buffer:
+                shutil.copyfileobj(file.file, buffer)
 
         # # Extract ZIP
         # with zipfile.ZipFile(file_path, "r") as zip_ref:
