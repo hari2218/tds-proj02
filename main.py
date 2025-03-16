@@ -16,6 +16,7 @@ import pkg_resources
 import logging
 import httpx
 import re
+import stat
 import time
 
 app = FastAPI()
@@ -111,7 +112,7 @@ tools = [
                 "properties": {
                     "file": {
                         "type": ["string", "null"],
-                        "description": "The file for the task to be performed. If unavailable, set to null.",
+                        "description": "The file to be downloaded. If unavailable, set to null.",
                         "nullable": True,
                     }
                 },
@@ -242,8 +243,12 @@ async def process_file(
 ):
     uid = str(int(time.time()))
 
-    dir_data = os.path.join(ROOT_DIR, uid, "data")
-    dir_script = os.path.join(ROOT_DIR, uid, "script")
+    data_dir = os.path.join(ROOT_DIR, f"data_{uid}")
+
+    script_dir = os.path.join(ROOT_DIR, "script")
+    os.makedirs(script_dir, exist_ok=True)
+
+    script_file = os.path.join(ROOT_DIR, "script", f"task_{uid}.py")
 
     try:
         downloaded_file = None
@@ -253,9 +258,9 @@ async def process_file(
 
         # Save uploaded file
         if file and file.filename:
-            os.makedirs(dir_data, exist_ok=True)
+            os.makedirs(data_dir, exist_ok=True)
 
-            downloaded_file = os.path.join(dir_data, file.filename)
+            downloaded_file = os.path.join(data_dir, file.filename)
 
             with open(downloaded_file, "wb") as buffer:
                 shutil.copyfileobj(file.file, buffer)
@@ -266,20 +271,16 @@ async def process_file(
         if not function_args:
             function_args = {}
 
-        return function_chosen(question, dir_script, downloaded_file, **function_args)
+        return function_chosen(question, script_file, downloaded_file, **function_args)
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
     finally:
-        if os.path.exists(dir_data):
-            shutil.rmtree(dir_data, ignore_errors=True)
-
-        if os.path.exists(dir_script):
-            shutil.rmtree(dir_script, ignore_errors=True)
+        shutil.rmtree(data_dir, ignore_errors=True)
 
 
-def create_script(task: str, dir_script: str, downloaded_file: str, **args):
+def create_script(task: str, script_path: str, downloaded_file: str, **args):
     if downloaded_file and "file" in args and args["file"]:
         arg_file = args["file"]
         task = task.replace(arg_file, downloaded_file)
@@ -306,9 +307,9 @@ def create_script(task: str, dir_script: str, downloaded_file: str, **args):
         r"```python[\r\n]*(.+?)[\r\n]*```", r"\1", script_content, flags=re.DOTALL
     )
 
-    os.makedirs(dir_script, exist_ok=True)
+    with open(script_path + ".txt", "w") as script_file:
+        script_file.write(task)
 
-    script_path = os.path.join(dir_script, "script.py")
     with open(script_path, "w") as script_file:
         script_file.write(script_content)
 
@@ -320,8 +321,10 @@ def create_script(task: str, dir_script: str, downloaded_file: str, **args):
 
     # Execute script
     result = subprocess.run(["python", script_path], capture_output=True, text=True)
-    output = result.stdout.strip()
+
+    if result.stderr:
+        raise HTTPException(status_code=500, detail=result.stderr)
 
     return {
-        "answer": output,
+        "answer": result.stdout.strip(),
     }

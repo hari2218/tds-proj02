@@ -1,2 +1,1 @@
-# tds-proj02
-TDS 2005 - Project 2
+Deployed to production. Run `vercel --prod` to overwrite later
