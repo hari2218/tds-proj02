@@ -16,6 +16,7 @@ import pkg_resources
 import logging
 import httpx
 import re
+import time
 
 app = FastAPI()
 
@@ -52,12 +53,7 @@ if not AIPROXY_TOKEN:
 APP_ID = "tds-proj02"
 ssl_verify = False
 
-DATA_DIR = f"{ROOT_DIR}/data"
-SCRIPT_DIR = f"{ROOT_DIR}/scripts"
-
 os.makedirs(ROOT_DIR, exist_ok=True)
-os.makedirs(DATA_DIR, exist_ok=True)
-os.makedirs(SCRIPT_DIR, exist_ok=True)
 
 
 def get_tool_calls(tool: Dict[str, Any]):
@@ -244,6 +240,11 @@ def check_modules(modules):
 async def process_file(
     question: str = Form(...), file: Optional[UploadFile] = File(None)
 ):
+    uid = str(int(time.time()))
+
+    dir_data = os.path.join(ROOT_DIR, uid, "data")
+    dir_script = os.path.join(ROOT_DIR, uid, "script")
+
     try:
         downloaded_file = None
 
@@ -252,7 +253,9 @@ async def process_file(
 
         # Save uploaded file
         if file and file.filename:
-            downloaded_file = os.path.join(DATA_DIR, file.filename)
+            os.makedirs(dir_data, exist_ok=True)
+
+            downloaded_file = os.path.join(dir_data, file.filename)
 
             with open(downloaded_file, "wb") as buffer:
                 shutil.copyfileobj(file.file, buffer)
@@ -263,41 +266,20 @@ async def process_file(
         if not function_args:
             function_args = {}
 
-        # if downloaded_file:
-        #     function_args["downloaded_file"] = downloaded_file
-
-        return function_chosen(question, downloaded_file, **function_args)
-
-        # script_content = ""
-
-        # script_path = os.path.join(SCRIPT_DIR, "script.py")
-        # with open(script_path, "w") as script_file:
-        #     script_file.write(script_content)
-
-        # modules = extract_imports(script_path)
-        # missing, outdated = check_modules(modules)
-
-        # for module in missing:
-        #     subprocess.run(
-        #         ["uv", "pip", "install", module], capture_output=True, text=True
-        #     )
-
-        # # Execute script
-        # result = subprocess.run(["python", script_path], capture_output=True, text=True)
-        # output = result.stdout.strip()
-
-        # if not output:
-        #     return {
-        #         "error": "I am having difficulty obtaining results from the script."
-        #     }
-
-        # return {"answer": output}
+        return function_chosen(question, dir_script, downloaded_file, **function_args)
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+    finally:
+        if os.path.exists(dir_data):
+            shutil.rmtree(dir_data, ignore_errors=True)
 
-def create_script(task: str, downloaded_file: str, **args):
+        if os.path.exists(dir_script):
+            shutil.rmtree(dir_script, ignore_errors=True)
+
+
+def create_script(task: str, dir_script: str, downloaded_file: str, **args):
     if downloaded_file and "file" in args and args["file"]:
         arg_file = args["file"]
         task = task.replace(arg_file, downloaded_file)
@@ -324,7 +306,9 @@ def create_script(task: str, downloaded_file: str, **args):
         r"```python[\r\n]*(.+?)[\r\n]*```", r"\1", script_content, flags=re.DOTALL
     )
 
-    script_path = os.path.join(SCRIPT_DIR, "script.py")
+    os.makedirs(dir_script, exist_ok=True)
+
+    script_path = os.path.join(dir_script, "script.py")
     with open(script_path, "w") as script_file:
         script_file.write(script_content)
 
