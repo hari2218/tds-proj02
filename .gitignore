@@ -170,3 +170,5 @@ cython_debug/
 # PyPI configuration file
 .pypirc
 _samples/
+.vscode/
+tds2025_temp/

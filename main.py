@@ -15,6 +15,7 @@ import subprocess
 import pkg_resources
 import logging
 import httpx
+import re
 
 app = FastAPI()
 
@@ -30,13 +31,13 @@ app.add_middleware(
     allow_headers=["*"],  # Allows all headers
 )
 
-DATA_DIR: str = "/data"
+ROOT_DIR: str = "./tds2025_temp"
 DEV_EMAIL: str = "hariharan.chandran@straive.com"
 
 # AI Proxy
 # # AI_URL: str = "https://api.openai.com/v1"
 AI_URL: str = "https://aiproxy.sanand.workers.dev/openai/v1"
-AIPROXY_TOKEN: str = os.environ.get("AIPROXY_TOKEN")
+AIPROXY_TOKEN: str = ""  # os.environ.get("AIPROXY_TOKEN")
 AI_MODEL: str = "gpt-4o-mini"
 AI_EMBEDDINGS_MODEL: str = "text-embedding-3-small"
 
@@ -51,17 +52,15 @@ if not AIPROXY_TOKEN:
 APP_ID = "tds-proj02"
 ssl_verify = False
 
-UPLOAD_DIR = f"{DATA_DIR}/uploads"
-EXTRACT_DIR = f"{DATA_DIR}/extracted"
-SCRIPT_DIR = f"{DATA_DIR}/scripts"
+DATA_DIR = f"{ROOT_DIR}/data"
+SCRIPT_DIR = f"{ROOT_DIR}/scripts"
 
+os.makedirs(ROOT_DIR, exist_ok=True)
 os.makedirs(DATA_DIR, exist_ok=True)
-os.makedirs(UPLOAD_DIR, exist_ok=True)
-os.makedirs(EXTRACT_DIR, exist_ok=True)
 os.makedirs(SCRIPT_DIR, exist_ok=True)
 
 
-def execute_tool_calls(tool: Dict[str, Any]):
+def get_tool_calls(tool: Dict[str, Any]):
     if tool and "tool_calls" in tool:
         for tool_call in tool["tool_calls"]:
             function_name = tool_call["function"].get("name")
@@ -72,13 +71,22 @@ def execute_tool_calls(tool: Dict[str, Any]):
                 function_chosen = globals()[function_name]
                 function_args = parse_function_args(function_args)
 
-                if isinstance(function_args, dict):
-                    return function_chosen(**function_args)
-
-                else:
-                    return function_chosen()
+                return (
+                    function_chosen,
+                    function_args,
+                )
 
     raise NotImplementedError("Unknown task")
+
+
+def execute_tool_calls(tool: Dict[str, Any]):
+    function_chosen, function_args = get_tool_calls(tool)
+
+    if isinstance(function_args, dict):
+        return function_chosen(**function_args)
+
+    else:
+        return function_chosen()
 
 
 def parse_function_args(function_args: Optional[Any]):
@@ -96,26 +104,28 @@ def parse_function_args(function_args: Optional[Any]):
 
 
 # Task implementations
-tools = {
-    "type": "function",
-    "function": {
-        "name": "get_script",
-        "description": "Any task",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "file": {
-                    "type": ["string", "null"],
-                    "description": "The file for the task to be performed. If unavailable, set to null.",
-                    "nullable": True,
-                }
+tools = [
+    {
+        "type": "function",
+        "function": {
+            "name": "create_script",
+            "description": "Any task",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "file": {
+                        "type": ["string", "null"],
+                        "description": "The file for the task to be performed. If unavailable, set to null.",
+                        "nullable": True,
+                    }
+                },
+                "required": ["file"],
+                "additionalProperties": False,
             },
-            "required": ["file"],
-            "additionalProperties": False,
+            "strict": True,
         },
-        "strict": True,
-    },
-}
+    }
+]
 
 
 def get_task_tool(task: str, tools: list[Dict[str, Any]]) -> Dict[str, Any]:
@@ -231,98 +241,103 @@ def check_modules(modules):
 
 
 @app.post("/api")
-async def process_file(question: str = File(...), file: Optional[UploadFile] = File(None)):
+async def process_file(
+    question: str = Form(...), file: Optional[UploadFile] = File(None)
+):
     try:
+        downloaded_file = None
+
         if not question:
-            raise ValueError("Task description is required")
+            raise HTTPException(status_code=400, detail="Task description is required")
 
         # Save uploaded file
         if file and file.filename:
-            file_path = os.path.join(UPLOAD_DIR, file.filename)
-            with open(file_path, "wb") as buffer:
+            downloaded_file = os.path.join(DATA_DIR, file.filename)
+
+            with open(downloaded_file, "wb") as buffer:
                 shutil.copyfileobj(file.file, buffer)
 
-        # # Extract ZIP
-        # with zipfile.ZipFile(file_path, "r") as zip_ref:
-        #     zip_ref.extractall(EXTRACT_DIR)
+        tool = get_task_tool(question, tools)
+        function_chosen, function_args = get_tool_calls(tool)
 
-        # # Find CSV File
-        # csv_file = next((f for f in os.listdir(EXTRACT_DIR) if f.endswith(".csv")), None)
-        # if not csv_file:
-        #     return {"error": "No CSV file found in ZIP"}
+        if not function_args:
+            function_args = {}
 
-        # # Read CSV
-        # csv_path = os.path.join(EXTRACT_DIR, csv_file)
-        # df = pd.read_csv(csv_path)
+        # if downloaded_file:
+        #     function_args["downloaded_file"] = downloaded_file
 
-        # if "answer" not in df.columns:
-        #     return {"error": "No 'answer' column found in CSV"}
+        return function_chosen(question, downloaded_file, **function_args)
 
-        # # Get answer value (assuming first row)
-        # answer = df["answer"].iloc[0]
+        # script_content = ""
 
-        # return {"answer": str(answer)}
+        # script_path = os.path.join(SCRIPT_DIR, "script.py")
+        # with open(script_path, "w") as script_file:
+        #     script_file.write(script_content)
 
-        script_content = """
-import requests
-import zipfile
-import os
+        # modules = extract_imports(script_path)
+        # missing, outdated = check_modules(modules)
 
-# URL of the ZIP file
-url = "https://example.com/abcd.zip"  # Replace with actual URL
+        # for module in missing:
+        #     subprocess.run(
+        #         ["uv", "pip", "install", module], capture_output=True, text=True
+        #     )
 
-# Local filename to save the ZIP file
-zip_file_path = "abcd.zip"
+        # # Execute script
+        # result = subprocess.run(["python", script_path], capture_output=True, text=True)
+        # output = result.stdout.strip()
 
-# Download the ZIP file
-print("Downloading...")
-response = requests.get(url, stream=True)
-if response.status_code == 200:
-    with open(zip_file_path, "wb") as file:
-        for chunk in response.iter_content(chunk_size=1024):
-            file.write(chunk)
-    print("Download complete.")
-else:
-    print("Failed to download file.")
-    exit()
+        # if not output:
+        #     return {
+        #         "error": "I am having difficulty obtaining results from the script."
+        #     }
 
-# Unzip the file
-extract_folder = "abcd_extracted"
-os.makedirs(extract_folder, exist_ok=True)
-
-print("Extracting...")
-with zipfile.ZipFile(zip_file_path, "r") as zip_ref:
-    zip_ref.extractall(extract_folder)
-print("Extraction complete.")
-
-# Optionally, delete the ZIP file after extraction
-os.remove(zip_file_path)
-print("Cleanup complete.")
-
-"""
-
-        script_path = os.path.join(SCRIPT_DIR, "script.py")
-        with open(script_path, "w") as script_file:
-            script_file.write(script_content)
-
-        modules = extract_imports(script_path)
-        missing, outdated = check_modules(modules)
-
-        for module in missing:
-            subprocess.run(
-                ["uv", "pip", "install", module], capture_output=True, text=True
-            )
-
-        # Execute script
-        result = subprocess.run(["python", script_path], capture_output=True, text=True)
-        output = result.stdout.strip()
-
-        if not output:
-            return {
-                "error": "I am having difficulty obtaining results from the script."
-            }
-
-        return {"answer": output}
+        # return {"answer": output}
 
     except Exception as e:
-        return {"error": str(e)}
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+def create_script(task: str, downloaded_file: str, **args):
+    if downloaded_file and "file" in args and args["file"]:
+        arg_file = args["file"]
+        task = task.replace(arg_file, downloaded_file)
+
+        arg_file = re.sub(
+            r"download_file\(['\"](.+?)['\"]\)", r"\1", arg_file, flags=re.DOTALL
+        )
+        task = task.replace(arg_file, downloaded_file)
+
+    response = get_chat_completions(
+        [
+            {
+                "role": "system",
+                "content": "Write a python script for the following task, script should be well returned without ant structural or logical error. Only result should be printed in the output. And any error should be handled accordingly. Return only the python script.",
+            },
+            {"role": "user", "content": task},
+        ]
+    )
+
+    script_content = response["content"].strip()
+
+    # get only the python code block, using re
+    script_content = re.sub(
+        r"```python[\r\n]*(.+?)[\r\n]*```", r"\1", script_content, flags=re.DOTALL
+    )
+
+    script_path = os.path.join(SCRIPT_DIR, "script.py")
+    with open(script_path, "w") as script_file:
+        script_file.write(script_content)
+
+    modules = extract_imports(script_path)
+    missing, outdated = check_modules(modules)
+
+    for module in missing:
+        subprocess.run(["uv", "pip", "install", module], capture_output=True, text=True)
+
+    # Execute script
+    result = subprocess.run(["python", script_path], capture_output=True, text=True)
+    output = result.stdout.strip()
+
+    return {
+        "answer": output,
+    }
