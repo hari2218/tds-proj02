@@ -105,6 +105,44 @@ tools = [
     {
         "type": "function",
         "function": {
+            "name": "google_sheet_formula",
+            "description": "Task to evaluate Google Sheet formula",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "formula": {
+                        "type": "string",
+                        "description": "Google Sheet formula",
+                    }
+                },
+                "required": ["formula"],
+                "additionalProperties": False,
+            },
+            "strict": True,
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "excel_formula",
+            "description": "Task to evaluate Excel formula",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "formula": {
+                        "type": "string",
+                        "description": "Excel formula",
+                    }
+                },
+                "required": ["formula"],
+                "additionalProperties": False,
+            },
+            "strict": True,
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "create_script",
             "description": "Any task",
             "parameters": {
@@ -121,7 +159,7 @@ tools = [
             },
             "strict": True,
         },
-    }
+    },
 ]
 
 
@@ -271,7 +309,13 @@ async def process_file(
         if not function_args:
             function_args = {}
 
-        return function_chosen(question, script_file, downloaded_file, **function_args)
+        if function_chosen.__name__ != "create_script":
+            return function_chosen(**function_args)
+
+        else:
+            return function_chosen(
+                question, script_file, downloaded_file, **function_args
+            )
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -328,3 +372,31 @@ def create_script(task: str, script_path: str, downloaded_file: str, **args):
     return {
         "answer": result.stdout.strip(),
     }
+
+
+def google_sheet_formula(formula: str):
+    response = get_chat_completions(
+        [
+            {
+                "role": "system",
+                "content": "What would be the output for the following formula in Google Sheet? Return only the final value.",
+            },
+            {"role": "user", "content": formula},
+        ]
+    )
+
+    return {"answer": response["content"].strip()}
+
+
+def excel_formula(formula: str):
+    response = get_chat_completions(
+        [
+            {
+                "role": "system",
+                "content": "What would be the output for the following formula in Excel? Return only the final value.",
+            },
+            {"role": "user", "content": formula},
+        ]
+    )
+
+    return {"answer": response["content"].strip()}

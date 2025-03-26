@@ -1,1 +1,1 @@
-Deployed to production. Run `vercel --prod` to overwrite later
+vercel --prod
