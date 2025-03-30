@@ -1,4 +1,4 @@
-from fastapi import FastAPI, File, UploadFile, Form, HTTPException, Response
+from fastapi import FastAPI, File, UploadFile, Form, HTTPException, Response, Request
 from fastapi.middleware.cors import CORSMiddleware
 from typing import Any, Dict, Optional
 import json
@@ -39,14 +39,14 @@ DEV_EMAIL: str = "hariharan.chandran@straive.com"
 # AI Proxy
 # # AI_URL: str = "https://api.openai.com/v1"
 AI_URL: str = "https://aiproxy.sanand.workers.dev/openai/v1"
-AIPROXY_TOKEN: str = ""  # os.environ.get("AIPROXY_TOKEN")
+AIPROXY_TOKEN: str = os.environ.get("AIPROXY_TOKEN")
 AI_MODEL: str = "gpt-4o-mini"
 AI_EMBEDDINGS_MODEL: str = "text-embedding-3-small"
 
 # for debugging use LLM token
-if not AIPROXY_TOKEN:
-    AI_URL = "https://llmfoundry.straive.com/openai/v1"
-    AIPROXY_TOKEN = os.environ.get("LLM_TOKEN")
+# if not AIPROXY_TOKEN:
+#     AI_URL = "https://llmfoundry.straive.com/openai/v1"
+#     AIPROXY_TOKEN = os.environ.get("LLM_TOKEN")
 
 if not AIPROXY_TOKEN:
     raise KeyError("AIPROXY_TOKEN environment variables is missing")
@@ -58,20 +58,24 @@ os.makedirs(ROOT_DIR, exist_ok=True)
 
 
 def get_tool_calls(tool: Dict[str, Any]):
-    if tool and "tool_calls" in tool:
-        for tool_call in tool["tool_calls"]:
-            function_name = tool_call["function"].get("name")
-            function_args = tool_call["function"].get("arguments")
+    if tool:
+        if "tool_calls" in tool:
+            for tool_call in tool["tool_calls"]:
+                function_name = tool_call["function"].get("name")
+                function_args = tool_call["function"].get("arguments")
 
-            # Ensure the function name is valid and callable
-            if function_name in globals() and callable(globals()[function_name]):
-                function_chosen = globals()[function_name]
-                function_args = parse_function_args(function_args)
+                # Ensure the function name is valid and callable
+                if function_name in globals() and callable(globals()[function_name]):
+                    function_chosen = globals()[function_name]
+                    function_args = parse_function_args(function_args)
 
-                return (
-                    function_chosen,
-                    function_args,
-                )
+                    return (
+                        function_chosen,
+                        function_args,
+                    )
+
+        if "content" in tool and tool["content"]:
+            raise ValueError(tool["content"])
 
     raise NotImplementedError("Unknown task")
 
@@ -144,17 +148,47 @@ tools = [
         "type": "function",
         "function": {
             "name": "create_script",
-            "description": "Any task",
+            "description": "Task on a file or a URL",
             "parameters": {
                 "type": "object",
                 "properties": {
+                    "task": {
+                        "type": "string",
+                        "description": "Task to be performed",
+                        "nullable": True,
+                    },
                     "file": {
                         "type": ["string", "null"],
                         "description": "The file to be downloaded. If unavailable, set to null.",
                         "nullable": True,
-                    }
+                    },
+                    "url": {
+                        "type": ["string", "null"],
+                        "description": "The URL to be accessed. If unavailable, set to null.",
+                        "nullable": True,
+                    },
                 },
-                "required": ["file"],
+                "required": ["task", "file", "url"],
+                "additionalProperties": False,
+            },
+            "strict": True,
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "create_script",
+            "description": "Task to perfome on an attached file",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "task": {
+                        "type": "string",
+                        "description": "Task to be performed",
+                        "nullable": True,
+                    },
+                },
+                "required": ["task"],
                 "additionalProperties": False,
             },
             "strict": True,
@@ -277,7 +311,9 @@ def check_modules(modules):
 
 @app.post("/api")
 async def process_file(
-    question: str = Form(...), file: Optional[UploadFile] = File(None)
+    question: str = Form(...),
+    file: Optional[UploadFile] = File(None),
+    request: Request = None,
 ):
     uid = str(int(time.time()))
 
@@ -309,13 +345,21 @@ async def process_file(
         if not function_args:
             function_args = {}
 
-        if function_chosen.__name__ != "create_script":
-            return function_chosen(**function_args)
+        if function_chosen.__name__ in {
+            "create_script",
+            "create_script1",
+            "create_script2",
+        }:
+            if "task" in function_args:
+                # question = function_args["task"]
+                del function_args["task"]
 
-        else:
-            return function_chosen(
+            return create_script(
                 question, script_file, downloaded_file, **function_args
             )
+
+        else:
+            return function_chosen(**function_args)
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -325,22 +369,44 @@ async def process_file(
 
 
 def create_script(task: str, script_path: str, downloaded_file: str, **args):
-    if downloaded_file and "file" in args and args["file"]:
-        arg_file = args["file"]
-        task = task.replace(arg_file, downloaded_file)
+    if downloaded_file:
+        downloaded_file = os.path.abspath(downloaded_file)
 
-        arg_file = re.sub(
-            r"download_file\(['\"](.+?)['\"]\)", r"\1", arg_file, flags=re.DOTALL
-        )
-        task = task.replace(arg_file, downloaded_file)
+        if "file" in args and args["file"]:
+            arg_file = args["file"]
+            task = task.replace(arg_file, downloaded_file)
+
+            arg_file = re.sub(
+                r"download_file\(['\"](.+?)['\"]\)", r"\1", arg_file, flags=re.DOTALL
+            )
+            task = task.replace(arg_file, downloaded_file)
+            task = re.sub(r"\b(download)\b", " ", task, flags=re.IGNORECASE)
+
+        else:
+            file_name = os.path.basename(downloaded_file)
+            task = task.replace(file_name, downloaded_file)
+
+    file_prompt = f"\n\nFile: {downloaded_file}" if downloaded_file else ""
 
     response = get_chat_completions(
         [
             {
                 "role": "system",
-                "content": "Write a python script for the following task, script should be well returned without ant structural or logical error. Only result should be printed in the output. And any error should be handled accordingly. Return only the python script.",
+                "content": """
+Develop a Python script to perform the specified task, adhering to the following requirements:  
+
+- Use the latest stable versions of any required modules or libraries, ensuring compatibility with the most recent Python release.  
+- The script should be free of structural, logical, or syntax errors.  
+- The output must include only the result or any error message, with no additional explanations, debug information, or extraneous values.  
+- If the result of the task is a file, print only the file path.  
+- Handle exceptions robustly and take appropriate actions in each case to ensure graceful error management without unexpected terminations.  
+- Adhere to Python's best practices (e.g., PEP 8 style guide) for clarity and maintainability.  
+- Ensure all instructions in this prompt are implemented in the script comprehensively and without omissions.  
+
+Return only the Python script as the response, without any additional explanations or text.
+""".strip(),
             },
-            {"role": "user", "content": task},
+            {"role": "user", "content": task + file_prompt},
         ]
     )
 
@@ -351,8 +417,8 @@ def create_script(task: str, script_path: str, downloaded_file: str, **args):
         r"```python[\r\n]*(.+?)[\r\n]*```", r"\1", script_content, flags=re.DOTALL
     )
 
-    with open(script_path + ".txt", "w") as script_file:
-        script_file.write(task)
+    # with open(script_path + ".txt", "w") as script_file:
+    #     script_file.write(task)
 
     with open(script_path, "w") as script_file:
         script_file.write(script_content)
@@ -368,6 +434,14 @@ def create_script(task: str, script_path: str, downloaded_file: str, **args):
 
     if result.stderr:
         raise HTTPException(status_code=500, detail=result.stderr)
+
+    out_str = result.stdout.strip()
+
+    # if out_str is absulete path make it relative path
+    if os.path.isabs(out_str):
+        out_str = os.path.relpath(out_str, ROOT_DIR)
+
+    out_str = out_str.replace(ROOT_DIR, ".")
 
     return {
         "answer": result.stdout.strip(),
